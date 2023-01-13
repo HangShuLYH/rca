@@ -1,6 +1,7 @@
 import os
 
 from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
 
 
 class InstructionData:
@@ -22,16 +23,17 @@ class InstructionSet:
 
     def visualize_pca(self):
         save_dir = "visualize"
-        os.system(f'mkdir {save_dir}')
+        if not os.path.exists(save_dir):
+            os.system(f'mkdir {save_dir}')
         for addr in self.instr_map.keys():
             pca = PCA(n_components=2)
-            pca.fit(self.instr_map[addr])
-            result = pca.transform(self.instr_map[addr])
+            pca.fit(self.instr_map[addr].data)
+            result = pca.transform(self.instr_map[addr].data)
             fig, ax = plt.subplots(dpi=80, figsize=(9, 6))
             pca_x1 = result[:, 0]
             pca_x2 = result[:, 1]
             plt.scatter(pca_x1, pca_x2)
-            plt.show()
+            # plt.show()
             save_name = os.path.join(save_dir, addr)
             plt.savefig(save_name)
 
