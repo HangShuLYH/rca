@@ -202,14 +202,14 @@ VOID parse_image(IMG img, VOID *v) {
  */
 VOID Fini(INT32 code, VOID *v) {
     std::ostringstream title;
-    title << "Addr Disassemble";
+    title << "Addr,Disassemble";
     for (int i = 0;i < NUM_REGS; i++) {
-        title << " " << REG_NAMES[i] << "_max";
-        title << " " << REG_NAMES[i] << "_min";
+        title << "," << REG_NAMES[i] << "_max";
+        title << "," << REG_NAMES[i] << "_min";
     }
-    title << " predecessors";
-    title << " successors";
-    title << " hit_count";
+    title << ",predecessors";
+    title << ",successors";
+    title << ",hit_count";
     fprintf(g_trace_file, "%s\n", title.str().data());
     for (std::pair<ADDRINT, InstructionData> temp: g_instruction_map) {
         std::string alias = temp.second.disas;
@@ -217,14 +217,14 @@ VOID Fini(INT32 code, VOID *v) {
         UINT64 successors = temp.second.successors.size();
         UINT64 count = temp.second.count;
         std::ostringstream ss;
-        ss << temp.first << " " << alias;
+        ss << temp.first << ",\"" << alias << "\"";
         for (int j = 0;j < NUM_REGS; j++) {
-            ss << " " << temp.second.max_val[j];
-            ss << " " << temp.second.min_val[j];
+            ss << "," << temp.second.max_val[j];
+            ss << "," << temp.second.min_val[j];
         }
-        ss << " " << predecessors;
-        ss << " " << successors;
-        ss << " " << count;
+        ss << "," << predecessors;
+        ss << "," << successors;
+        ss << "," << count;
         fprintf(g_trace_file, "%s\n", ss.str().data());
     }
     fclose(g_trace_file);
