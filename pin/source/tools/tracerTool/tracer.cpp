@@ -40,13 +40,38 @@ END_LEGAL */
 #include "pin.H"
 #include <string>
 
-#define NUM_REGS 23
+#define NUM_REGS 15
 
 enum EdgeType {Direct, Indirect, Conditional, Syscall, Return, Regular, Unknown};
 static const std::string EDGE_TYPE_STR[7] = {
     "Direct", "Indirect", "Conditional", "Syscall", "Return", "Regular", "Unknown"
 };
 
+struct MemoryField {
+    UINT64 address;
+    UINT32 size;
+    UINT64 value;
+};
+
+struct MemoryData {
+    MemoryField last_addr  = {0, 0, 0};
+    MemoryField min_addr   = {UINT64_MAX, 0, 0};
+    MemoryField max_addr   = {0, 0, 0};
+    MemoryField last_value = {0, 0, 0};
+    MemoryField min_value  = {0, 0, UINT64_MAX};
+    MemoryField max_value  = {0, 0, 0};
+
+    std::string to_string() const {
+        std::ostringstream ss;
+        ss << "{\"last_address\":" << last_addr.address << ",";
+        ss << "\"min_address\":"   << min_addr.address  << ",";
+        ss << "\"max_address\":"   << max_addr.address  << ",";
+        ss << "\"last_value\":" << last_value.value << ",";
+        ss << "\"min_value\":"   << min_value.value  << ",";
+        ss << "\"max_value\":"   << max_value.value  << "}";
+        return ss.str();
+    }
+};
 
 struct InstructionData {
   UINT64 count;
@@ -56,6 +81,7 @@ struct InstructionData {
   UINT64 last_val[NUM_REGS];
   std::set<ADDRINT> successors;
   std::set<ADDRINT> predecessors;
+  MemoryData mem;
 public:
     InstructionData(std::string disas){
         count = 0;
@@ -78,14 +104,14 @@ public:
 };
 
 static const REG REGISTERS[NUM_REGS] = {
-    REG_RAX, REG_RBX, REG_RCX, REG_RDX, REG_RSI, REG_RDI, REG_RBP, REG_RSP,
-    REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15,
-    REG_SEG_CS, REG_SEG_SS, REG_SEG_DS, REG_SEG_ES, REG_SEG_FS, REG_SEG_GS, REG_GFLAGS
+    REG_RAX, REG_RBX, REG_RCX, REG_RDX, REG_RSI, REG_RDI,
+    REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, 
+    REG_R14, REG_R15,REG_GFLAGS
 };
 static const std::string REG_NAMES[NUM_REGS] = {
-    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
-    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-    "seg_cs", "seg_ss", "seg_ds", "seg_es", "seg_fs", "seg_gs", "eflags"
+    "rax", "rbx", "rcx", "rdx", "rsi", "rdi",
+    "r8", "r9", "r10", "r11", "r12", "r13", 
+    "r14", "r15", "eflags"
 };
 
 static FILE * g_trace_file;
@@ -132,7 +158,34 @@ VOID ins_save_state(ADDRINT ins_addr, const std::string& ins_disas, const CONTEX
     g_prev_ins_addr = ins_addr;
     PIN_ReleaseLock(&g_lock);
 }
-
+UINT64 read_from_addr(ADDRINT mem_addr, ADDRINT size, ADDRINT ins_addr) {
+    switch(size) {
+        case 1:
+        {
+            uint8_t * value = reinterpret_cast<uint8_t *>(mem_addr);
+            return static_cast<uint64_t>(*value);
+        }
+        case 2:
+        {
+            uint16_t * value = reinterpret_cast<uint16_t *>(mem_addr);
+            return static_cast<uint64_t>(*value);
+        }
+        case 4:
+        {
+            uint32_t * value = reinterpret_cast<uint32_t *>(mem_addr);
+            return static_cast<uint64_t>(*value);
+        }
+        case 8:
+        {
+            uint64_t * value = reinterpret_cast<uint64_t *>(mem_addr);
+            return static_cast<uint64_t>(*value);
+        }
+        default:
+            LOG ("[E] Unhandled memory access size " + decstr(size) + " (" + decstr(size*8)
+                 + " bits). Value set to 0 for " + StringFromAddrint(ins_addr) + "\n");
+    }
+    return 0;
+}
 EdgeType get_edge_type(INS ins) {
     if (INS_IsRet(ins)) return Return;
     if (INS_IsCall(ins) || INS_IsBranch(ins)) {
@@ -145,6 +198,27 @@ EdgeType get_edge_type(INS ins) {
     return Regular;
 }
 
+VOID ins_save_memory_access(ADDRINT ins_addr, ADDRINT mem_addr, UINT32 size) {
+    // Disregard everything with more than 8 bytes (we are not interested in floating point stuff)
+    if (size > 8) {
+        return;
+    }
+    PIN_GetLock(&g_lock, ins_addr);
+    MemoryData* mem_data = &g_instruction_map[ins_addr].mem;
+    if (mem_data->last_addr.size && mem_data->last_addr.size != size) {
+        LOG("[E] Memory operand has different memory access sizes at " + StringFromAddrint(ins_addr) + "\n");
+        assert(mem_data->last_addr.size == size && "Memory operand has different memory access sizes");
+    }
+    MemoryField access = {mem_addr, size, 0};
+    access.value = read_from_addr(mem_addr, size, ins_addr);
+    if (mem_data->max_addr.address <= access.address) mem_data->max_addr = access;
+    if (mem_data->min_addr.address >= access.address) mem_data->min_addr = access;
+    mem_data->last_addr = access;
+    if (mem_data->max_value.value <= access.value) mem_data->max_value = access;
+    if (mem_data->min_value.value >= access.value) mem_data->min_value = access;
+    mem_data->last_value = access;
+    PIN_ReleaseLock(&g_lock);
+}
 
 // Pin calls this function every time a new instruction is encountered
 VOID Instruction(INS ins, VOID *v) {
@@ -169,6 +243,38 @@ VOID Instruction(INS ins, VOID *v) {
             IARG_CONST_CONTEXT,
             IARG_END
         );
+
+                if (!(INS_HasExplicitMemoryReference(ins) || INS_Stutters(ins)) || type != Regular) {
+            return;
+        }
+        // Ignore non-typical operations such as vscatter/vgather
+        if (!INS_IsStandardMemop(ins)) {
+            LOG("[W] Non-standard memory operand encountered: " + StringFromAddrint(INS_Address(ins))
+                + " : " + INS_Disassemble(ins) + "\n");
+            return;
+        }
+
+        // Iterate over all memory operands of the instruction
+        UINT32 mem_operands = INS_MemoryOperandCount(ins);
+        for (UINT32 mem_op = 0; mem_op < mem_operands; mem_op++) {
+            // Ensure that we can determine the size
+            if (!INS_hasKnownMemorySize(ins)) {
+                LOG("[W] Memory operand with unknown size encountered: " + StringFromAddrint(INS_Address(ins))
+                    + " : " + INS_Disassemble(ins) + "\n");
+                continue;
+            }
+            // Instrument only when we *write* to memory
+            if (INS_MemoryOperandIsWritten(ins, mem_op)) {
+                // Instrument only when the instruction is executed (conditional mov)
+                INS_InsertPredicatedCall(
+                    ins, IPOINT_AFTER, (AFUNPTR)ins_save_memory_access,
+                    IARG_INST_PTR,
+                    IARG_MEMORYOP_EA, mem_op,
+                    IARG_MEMORYWRITE_SIZE,
+                    IARG_END
+                );
+            }
+        }
 
     }
 }
@@ -207,6 +313,7 @@ VOID Fini(INT32 code, VOID *v) {
         title << "," << REG_NAMES[i] << "_max";
         title << "," << REG_NAMES[i] << "_min";
     }
+    // title << ",mem_max,mem_min";
     title << ",predecessors";
     title << ",successors";
     title << ",hit_count";
@@ -217,11 +324,18 @@ VOID Fini(INT32 code, VOID *v) {
         UINT64 successors = temp.second.successors.size();
         UINT64 count = temp.second.count;
         std::ostringstream ss;
-        ss << temp.first << ",\"" << alias << "\"";
+        ss << std::hex << "0x" <<temp.first << std::dec <<",\"" << alias << "\"";
         for (int j = 0;j < NUM_REGS; j++) {
             ss << "," << temp.second.max_val[j];
             ss << "," << temp.second.min_val[j];
         }
+        // if(temp.second.mem.last_addr.size != 0) {
+        //     ss << "," << temp.second.mem.max_value.value;
+        //     ss << "," << temp.second.mem.min_value.value;
+        // } else {
+        //     ss << ",0";
+        //     ss << ",0";
+        // }
         ss << "," << predecessors;
         ss << "," << successors;
         ss << "," << count;
